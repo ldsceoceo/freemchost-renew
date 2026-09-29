@@ -7,6 +7,7 @@
  *  技术栈 : Node.js 18+ / Playwright (Chromium) / GitHub Actions
  *  参考   : wittyconan/freemchost-renew (kingwgb) 弹窗清理 + 时间提取 + 事件穿透
  *           AgentScribe 真实录制（Manage 菜单 → Renew now → 60 小时 → _serverFn POST）
+ *           + 2026-09-29 新录制 session 7f850f27（Renew now 新结构 + renewable 布尔门控 + checkbox 条款）
  *  主路线 : 浏览器 UI 自动化（前端构建哈希 /_serverFn/<hash> 会随版本变化，故不做纯 API 主链路；
  *           本脚本会嗅探并打印真实的 _serverFn 端点与载荷，便于后续升级纯 API 模式）
  *
@@ -229,18 +230,30 @@ async function apiCheckOne(url, id, state) {
     log(`📡 直调预检 HTTP ${r.status}${r.error ? ` (${r.error})` : ''}，回退浏览器（hash 可能已漂移，看上次嗅探日志更新 SERVERFN_HASH）`);
     return fail(`HTTP ${r.status}`);
   }
-  let remainMs, winH;
+  // 新录制(2026-09-29 session 7f850f27)回包实测：
+  // {"token":"...","window_hours":46,"min_dwell_ms":600,"renewable":t:2/s:2(true),"remaining_ms":125430880(≈34.8h)}
+  // t:2 系布尔帧：s:2=true / s:1=false（同帧 error s:1=false 佐证）
+  let remainMs, winH, renewRaw;
   try {
     const j = JSON.parse(r.body);
     remainMs = framedValue(j, 'remaining_ms');
     winH = framedValue(j, 'window_hours');
+    renewRaw = framedValue(j, 'renewable');
   } catch { /* ignore */ }
   if (typeof remainMs !== 'number') {
     log('📡 直调回包形状变化，无法解析 remaining_ms，回退浏览器');
     return fail('回包无法解析');
   }
   const remainingH = remainMs / 3600000;
-  log(`📡 直调预检: 剩余 ${remainingH.toFixed(1)}h（窗口 ${winH || '?'}h）`);
+  const renewable = renewRaw === 2 ? true : renewRaw === 1 ? false : null;
+  log(`📡 直调预检: 剩余 ${remainingH.toFixed(1)}h（窗口 ${winH || '?'}h，可续 ${renewable === null ? '未知' : renewable}）`);
+  // 后端 renewable=true 拥有最高优先级：即使剩时略高于阈值也必须走浏览器（避免 can_renew 式误判跳过）
+  if (renewable === true) {
+    return { decision: 'GO', remainingH, note: `剩余 ${remainingH.toFixed(1)}h，后端标记可续(renewable=true)` };
+  }
+  if (renewable === false) {
+    return { decision: 'SKIP', remainingH, note: `后端标记暂不可续(renewable=false)，剩余 ${remainingH.toFixed(1)}h` };
+  }
   if (remainingH > CFG.thresholdHours) {
     return { decision: 'SKIP', remainingH, note: `剩余 ${remainingH.toFixed(1)}h ≥ 阈值 ${CFG.thresholdHours}h` };
   }
@@ -462,6 +475,17 @@ async function dismissNoise(page, tag = '') {
  */
 async function readExpiry(page) {
   return page.evaluate(() => {
+    // 0) 新结构 role=timer（2026-09-29 实测 aria-label="1d 10h 31m 27s remaining"），最优先
+    const timer = document.querySelector('[role="timer"][aria-label]');
+    if (timer) {
+      const lab = timer.getAttribute('aria-label') || '';
+      const tm = lab.match(/(\d{1,3})\s*d\s*(\d{1,2})\s*h\s*(\d{1,2})\s*m(?:\s*(\d{1,2})\s*s)?/i);
+      if (tm) {
+        const dd = parseInt(tm[1], 10), hh = parseInt(tm[2], 10), mi = parseInt(tm[3], 10), ss = tm[4] ? parseInt(tm[4], 10) : 0;
+        return { totalHours: dd * 24 + hh + mi / 60 + ss / 3600, raw: `${dd}天${hh}小时${mi}分` };
+      }
+    }
+
     const bodyText = document.body.innerText || '';
 
     const hms = (m, g1, g2, g3) => {
@@ -601,9 +625,9 @@ async function openManageMenu(page) {
   return true;
 }
 
-/** Manage 内容区作用域 */
+/** Manage 内容区作用域（新录制 2026-09-29：id 形如 radix-_r_8v_-content-manage，用 first 防噪点弹窗抢位） */
 function manageScope(page) {
-  return page.locator('[id$="-content-manage"], [role="dialog"]:has-text("Renew"), [data-radix-popper-content-wrapper]:has-text("Renew")').last();
+  return page.locator('[id$="-content-manage"], [role="dialog"]:has-text("Renew now"), [role="dialog"]:has-text("Renew"), [data-radix-popper-content-wrapper]:has-text("Renew")').first();
 }
 
 /**
@@ -655,25 +679,47 @@ async function renewOneServer(context, url, idx, total) {
     const remainH = before ? before.totalHours : null;
     log(`⏱️ 剩余时长: ${result.before}${remainH != null ? ` (${remainH.toFixed(1)}h)` : ''}`);
 
-    // 续期入口（录制 grounded 2026-09-25：按钮文案精确就是 "Renew"+右箭头，
-    // 列表卡片结构 a.group.relative > button.inline-flex.items-center）
-    let renewBtn = manageScope(page).locator('button:text-is("Renew")').first();
+    // 续期入口（新录制 2026-09-29 session 7f850f27 grounded：
+    // 文案精确是 "Renew now"(type=submit)，结构为
+    // #<id>-content-manage > div.overflow-hidden.rounded-lg > div.border-t.border-border > button.inline-flex.items-center，
+    // 旧 a.group.relative 结构已消失，故精确匹配优先 "Renew now"）
+    let renewBtn = manageScope(page).locator('button:text-is("Renew now")').first();
     let btnText = '';
     try {
       await renewBtn.waitFor({ state: 'visible', timeout: 4000 });
     } catch {
-      renewBtn = manageScope(page).locator('button:has-text("Renew")').first();
+      renewBtn = manageScope(page).locator('div.overflow-hidden.rounded-lg div.border-t button:has-text("Renew now")').first();
       try {
         await renewBtn.waitFor({ state: 'visible', timeout: 8000 });
       } catch {
-        // 录制结构备用定位（多 Renew 文案并存时防抓错）
-        const grounded = manageScope(page).locator('a.group.relative > button.inline-flex.items-center:has-text("Renew")').first();
-        if (await grounded.isVisible().catch(() => false)) {
-          renewBtn = grounded;
-          log('🎯 命中录制 grounded 选择器');
-        } else {
-          const found = await clickByText(manageScope(page), ['Renew now', 'Renew'], { timeout: 1500 });
-          if (!found) { result.note = '未找到 Renew 按钮（可能未到期或 UI 改版）'; await safeShot(page, `server-${idx}-norenew.png`); result.status = 'NO_BUTTON'; return result; }
+        renewBtn = manageScope(page).locator('button:has-text("Renew now")').first();
+        try {
+          await renewBtn.waitFor({ state: 'visible', timeout: 8000 });
+        } catch {
+          renewBtn = manageScope(page).locator('button:has-text("Renew")').first();
+          try {
+            await renewBtn.waitFor({ state: 'visible', timeout: 8000 });
+          } catch {
+            // 旧录制结构兜底（多 Renew 文案并存时防抓错）
+            const grounded = manageScope(page).locator('a.group.relative > button.inline-flex.items-center:has-text("Renew")').first();
+            if (await grounded.isVisible().catch(() => false)) {
+              renewBtn = grounded;
+              log('🎯 命中旧录制 grounded 选择器');
+            } else {
+              const found = await clickByText(manageScope(page), ['Renew now', 'Renew'], { timeout: 1500 });
+              if (!found) {
+                const dbg = await page.evaluate(() => {
+                  const m = document.querySelector('[id$="-content-manage"]');
+                  const btns = Array.from((m || document).querySelectorAll('button'))
+                    .map((b) => (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 30))
+                    .filter(Boolean).slice(0, 20);
+                  return { manageText: (m ? m.innerText : document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 300), btns };
+                }).catch(() => ({}));
+                log(`🔍 Manage 快照: ${(dbg.manageText || '').slice(0, 200)} | 按钮: ${(dbg.btns || []).join(' / ')}`);
+                result.note = '未找到 Renew 按钮（可能未到期或 UI 改版）'; await safeShot(page, `server-${idx}-norenew.png`); result.status = 'NO_BUTTON'; return result;
+              }
+            }
+          }
         }
       }
     }
@@ -714,6 +760,19 @@ async function renewOneServer(context, url, idx, total) {
     }
     if (!dur.ok) log(`ℹ️ 时长选择未命中（${dur.reason}），尝试直接确认（部分版本无需选择）`);
     await sleep(1200);
+
+    // 新录制 2026-09-29：弹窗含条款 checkbox（label > button[data-state]，unchecked→checked），
+    // 不勾选确认按钮无响应；注意 168h/336h 卡是付费项（点击触发 POST d12185… 返回 Stripe clientSecret），
+    // 免费续期切勿把它们加入 RENEW_DURATION_LABEL，直接走确认。
+    try {
+      const box = modal.locator('label button[data-state="unchecked"], button[role="checkbox"][data-state="unchecked"]').first();
+      if (await box.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await box.click({ timeout: 5000 });
+        log('☑️ 已勾选续期条款 checkbox');
+        await sleep(600);
+      }
+    } catch { /* 无 checkbox 则跳过 */ }
+    await sleep(400);
 
     // 确认续期（含可能出现的 renew_confirm_code 输入框）
     await page.evaluate(() => {
