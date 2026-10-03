@@ -741,8 +741,15 @@ async function renewOneServer(context, url, idx, total) {
     try { await renewBtn.click({ timeout: 8000 }); } catch { await clickByText(manageScope(page), ['Renew now', 'Renew']); }
     await sleep(2000);
     await dismissNoise(page, '(续期弹窗)');
-    const modal = page.locator('[role="dialog"]:has-text("Renew"), [data-state="open"][role="dialog"], [id^="radix-"][role="dialog"]').last();
-    try { await modal.waitFor({ state: 'visible', timeout: 12000 }); } catch { log('⚠️ 未探测到独立弹窗，继续在页面上操作'); }
+    // 续期弹窗精确定位：只认含 "Keep your server online"/renew_confirm_code 的 dialog，
+    // 通配 [data-state=open]/radix + last() 会被评分弹窗("How would you rate")抢位（2026-09-29 实锤）
+    const renewModal = () => page.locator('[role="dialog"]:has-text("Keep your server online"), [role="dialog"]:has(input[name="renew_confirm_code"])').first();
+    let modal = renewModal();
+    try { await modal.waitFor({ state: 'visible', timeout: 12000 }); }
+    catch {
+      modal = page.locator('[role="dialog"]:has-text("Renew"), [data-state="open"][role="dialog"], [id^="radix-"][role="dialog"]').first();
+      try { await modal.waitFor({ state: 'visible', timeout: 5000 }); } catch { log('⚠️ 未探测到独立弹窗，继续在页面上操作'); }
+    }
 
     // "come back later" 后端校验未就绪时等待解锁
     for (let poll = 0; poll < 12; poll++) {
@@ -784,6 +791,35 @@ async function renewOneServer(context, url, idx, total) {
     }).catch(() => {});
     await sleep(400);
 
+    // 确认前二次清场：评分弹窗会复活（截图实锤盖住 Renew 按钮），先定向关掉再重定位续期弹窗
+    await dismissNoise(page, '(确认前)');
+    await page.evaluate(() => {
+      const bad = /How would you rate|Your feedback|Tap a star/i;
+      const good = /Keep your server online|Renew|renew_confirm_code/i;
+      let killed = 0;
+      document.querySelectorAll('[role="dialog"]').forEach((d) => {
+        const t = d.innerText || '';
+        if (bad.test(t) && !good.test(t)) {
+          // 1) Maybe later 类出口；2) 右上 X（radix 关闭钮常无 aria-label，认 svg 图标钮/absolute 定位钮）；
+          // 3) 都没有则整块移除
+          const btns = Array.from(d.querySelectorAll('button'));
+          const btn = btns.find((b) => /Maybe later|Not now|No thanks|Skip|Dismiss/i.test(b.innerText || ''))
+            || d.querySelector('button[aria-label="Close"], button[aria-label="关闭"]')
+            || btns.find((b) => b.querySelector('svg') && !(b.innerText || '').trim())
+            || btns.find((b) => /absolute/.test(b.className || ''));
+          try { if (btn) btn.click(); else d.remove(); killed++; } catch { try { d.remove(); killed++; } catch { /* ignore */ } }
+        }
+      });
+      // 评分弹窗被关后，其残留遮罩（fixed inset-0）仍会挡点击；续期弹窗不受影响，一并清理
+      if (killed) {
+        document.querySelectorAll('div.fixed.inset-0').forEach((el) => {
+          if (el.getAttribute('data-state') === 'open' || el.getAttribute('data-state') === 'closed') el.remove();
+        });
+      }
+    }).catch(() => {});
+    await sleep(800);
+    await dismissNoise(page, '(确认前2)');
+    modal = renewModal();
     const confirmed = await clickByText(modal, [
       'Renew now', 'Confirm renew', 'Renew for', 'Confirm', 'Continue', 'Renew', 'Yes',
     ], { timeout: 1200 });
