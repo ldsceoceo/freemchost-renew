@@ -20,7 +20,7 @@
  *    SERVER_ID                           只填服务器 ID（可多个），自动拼 https://freemchost.com/app/servers/<ID>
  *    PROXY_URL                           http://127.0.0.1:1080 或 socks5://user:pass@ip:port
  *    TG_BOT_TOKEN / TG_CHAT_ID           Telegram 通知
- *    RENEW_THRESHOLD_HOURS               剩余时长低于该值才续期（默认 46）
+ *    RENEW_THRESHOLD_HOURS               剩余时长低于该值才续期（默认 24）
  *    RENEW_DURATION_LABEL                续期时长文案（默认 "60 hours"，可逗号分隔多个候选）
  *    VERIFY_MIN_HOURS                    入库验真最小增量小时（默认 20）
  *    DRY_RUN / HEADLESS / TIMEZONE / LOCALE / BROWSER_CHANNEL / NAV_TIMEOUT
@@ -60,7 +60,7 @@ const CFG = {
   tgToken: env('TG_BOT_TOKEN'),
   tgChatId: env('TG_CHAT_ID'),
   proxyUrl: env('PROXY_URL'),
-  thresholdHours: num('RENEW_THRESHOLD_HOURS', 46),
+  thresholdHours: num('RENEW_THRESHOLD_HOURS', 24),
   verifyMinHours: num('VERIFY_MIN_HOURS', 20),
   durationLabels: (env('RENEW_DURATION_LABEL', '60 hours') + ',60h,60 小时,3 days,3 天')
     .split(/[,|\n]/).map((s) => s.trim()).filter(Boolean),
@@ -247,8 +247,11 @@ async function apiCheckOne(url, id, state) {
   const remainingH = remainMs / 3600000;
   const renewable = renewRaw === 2 ? true : renewRaw === 1 ? false : null;
   log(`📡 直调预检: 剩余 ${remainingH.toFixed(1)}h（窗口 ${winH || '?'}h，可续 ${renewable === null ? '未知' : renewable}）`);
-  // 后端 renewable=true 拥有最高优先级：即使剩时略高于阈值也必须走浏览器（避免 can_renew 式误判跳过）
+  // 低于阈值才续期：后端 renewable=true 也需满足剩余时长门槛，避免 46h 窗口一打开就提前续期
   if (renewable === true) {
+    if (remainingH > CFG.thresholdHours) {
+      return { decision: 'SKIP', remainingH, note: `后端标记可续，但剩余 ${remainingH.toFixed(1)}h ≥ 阈值 ${CFG.thresholdHours}h，等待下一轮` };
+    }
     return { decision: 'GO', remainingH, note: `剩余 ${remainingH.toFixed(1)}h，后端标记可续(renewable=true)` };
   }
   if (renewable === false) {
@@ -921,7 +924,7 @@ async function reportResults(results) {
     return `${ICON[r.status] || '❔'} <b>[${r.idx}/${r.total}] ${r.id}${n}</b>\n   ${LABEL[r.status] || r.status}` +
       `${r.before ? ` | ${r.before}${r.after ? ` ➔ ${r.after}` : ''}` : ''}${r.note ? `\n   └ ${r.note}` : ''}`;
   });
-  const sum = `🖥 <b>FreeMCHost 自动续期报告</b>\n\n${lines.join('\n')}\n\n<b>阈值</b> &lt;${CFG.thresholdHours}h 触发 · <b>周期</b> 一次性定时(续期当天)\n<b>时间</b> ${nowStr()}`;
+  const sum = `🖥 <b>FreeMCHost 自动续期报告</b>\n\n${lines.join('\n')}\n\n<b>阈值</b> &lt;${CFG.thresholdHours}h 触发 · <b>周期</b> 每 3 天 02:10 UTC 巡检(低于24h续期)\n<b>时间</b> ${nowStr()}`;
   await sendTelegram(sum);
   console.log('\n================ 汇总 ================');
   results.forEach((r) => console.log(`${ICON[r.status]} [${r.idx}/${r.total}] ${r.id} ${r.before}${r.after ? ' ➔ ' + r.after : ''} ${r.note}`));

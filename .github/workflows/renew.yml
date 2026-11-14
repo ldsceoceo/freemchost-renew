@@ -2,8 +2,8 @@ name: FreeMCHost Auto Renew
 
 on:
   schedule:
-    # 一次性定时：续期当天（到期前 1 天）运行，UTC 02:10 = 北京时间 10:10；跑完需手动改下一次日期
-    - cron: '10 2 16 11 *'
+    # 固定巡检：每 3 天 UTC 02:10（北京时间 10:10）运行；仅在剩余时长低于 24h 时才真正续期
+    - cron: '10 2 */3 * *'
   workflow_dispatch:
 
 permissions:
@@ -68,7 +68,7 @@ jobs:
           SERVERFN_F: ${{ vars.SERVERFN_F || '63' }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           AUTO_UPDATE_STATE: ${{ vars.AUTO_UPDATE_STATE || 'true' }}
-          RENEW_THRESHOLD_HOURS: ${{ vars.RENEW_THRESHOLD_HOURS || '46' }}
+          RENEW_THRESHOLD_HOURS: ${{ vars.RENEW_THRESHOLD_HOURS || '24' }}
           RENEW_DURATION_LABEL: ${{ vars.RENEW_DURATION_LABEL || '60 hours' }}
           VERIFY_MIN_HOURS: ${{ vars.VERIFY_MIN_HOURS || '20' }}
           DRY_RUN: ${{ vars.DRY_RUN || 'false' }}

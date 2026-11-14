@@ -33,13 +33,15 @@
 3. 在 Actions 页面启用工作流。
 4. 手动触发一次运行，观察输出日志。
 
-### 调整运行时间（一次性定时）
+### 调整运行时间（每 3 天巡检）
 
-编辑 `.github/workflows/renew.yml` 中的 `cron` 字段，当前为一次性定时：只在续期当天（到期前 1 天）运行一次，跑完需按新的到期日手动改下一次日期：
+编辑 `.github/workflows/renew.yml` 中的 `cron` 字段，当前为固定每 3 天巡检：UTC 02:10（北京时间 10:10）跑一次，脚本用 API 预检门控，只有剩余时长低于 24h 才真正点续期，否则自动 SKIP，无需每次手动改日期：
 
 ```yaml
-- cron: '10 2 16 11 *'   # 续期当天（到期前 1 天）UTC 02:10 = 北京时间 10:10
+- cron: '10 2 */3 * *'   # 每 3 天 UTC 02:10 = 北京时间 10:10
 ```
+
+阈值由 `RENEW_THRESHOLD_HOURS`（默认 24）控制，后端 `renewable=true` 也受该阈值约束，不会在 46h 窗口一打开就提前续期。巡检间隔 72h 大于 24h 窗口，若某次巡检时剩余仍在 24h 以上会 SKIP、下一轮可能已过期，可用 Actions 页的 `workflow_dispatch` 手动兜底。
 
 ---
 
@@ -49,7 +51,7 @@
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `RENEW_THRESHOLD_HOURS` | `46` | 剩余时长低于该值才触发续期（小时） |
+| `RENEW_THRESHOLD_HOURS` | `24` | 剩余时长低于该值才触发续期（小时） |
 | `RENEW_DURATION_LABEL` | `60 hours` | 续期时长文案，可逗号分隔多个候选（60 hours,60h,3 天） |
 | `VERIFY_MIN_HOURS` | `20` | 入库验真最小增量小时（小于则判失败） |
 | `API_DIRECT` | `check` | 直调预检：check=先POST查剩时再走浏览器；off=纯浏览器 |
