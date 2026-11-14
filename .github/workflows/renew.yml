@@ -2,8 +2,8 @@ name: FreeMCHost Auto Renew
 
 on:
   schedule:
-    # 每 2 天巡检一次（UTC 02:10 = 北京时间 10:10，约48h，最接近46h的cron表达）
-    - cron: '10 2 */2 * *'
+    # 一次性定时：续期当天（到期前 1 天）运行，UTC 02:10 = 北京时间 10:10；跑完需手动改下一次日期
+    - cron: '10 2 16 11 *'
   workflow_dispatch:
 
 permissions:
