@@ -378,10 +378,20 @@ async function loginStateInfo(page) {
   return { ok: /sb-.*-auth-token/.test((st.tokenKeys || []).join(',')) && hasSupabaseToken(token || '{}'), info: st };
 }
 
-/** 是否已登录：不在 /login 且 localStorage 中存在 Supabase 令牌 */
+/** 是否已登录：不在登录页，且 localStorage 中存在 Supabase 令牌 */
 async function isLoggedIn(page) {
   const { ok } = await loginStateInfo(page);
-  return ok;
+  if (!ok) return false;
+  const url = page.url();
+  if (/\/login|\/sign-?in|\/auth\//i.test(url)) return false;
+  const ui = await page.evaluate(() => {
+    const pw = Array.from(document.querySelectorAll('input[type="password"]'))
+      .some((el) => el.offsetParent !== null);
+    const txt = (document.body.innerText || '').slice(0, 800);
+    return { pw, signin: /sign in to manage your servers/i.test(txt) };
+  }).catch(() => ({ pw: false, signin: false }));
+  if (ui.pw || ui.signin) return false;
+  return true;
 }
 
 async function dumpState(context) {
