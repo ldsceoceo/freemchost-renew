@@ -845,17 +845,20 @@ async function renewOneServer(context, url, idx, total) {
       const aH = after ? after.totalHours : null;
       log(`🔍 独立页面复核: ${result.before} ➔ ${result.after}`);
       await safeShot(verify, `server-${idx}-verify.png`);
-      if (before && aH != null && aH - (before.totalHours || 0) >= Math.min(CFG.verifyMinHours, 12)) {
+      const beforeH = before ? Math.max(0, before.totalHours || 0) : null;
+      const gain = (aH != null && before) ? aH - beforeH : null;
+      const minGain = Math.min(CFG.verifyMinHours, 12);
+      if (aH != null && (before == null ? aH >= minGain : gain >= minGain)) {
         result.status = 'SUCCESS';
-        result.note = `+${(aH - before.totalHours).toFixed(1)}h`;
-        log('🎉 验证通过，后端已落库');
-      } else if (before && aH != null && aH > before.totalHours) {
+        result.note = before ? `+${gain.toFixed(1)}h` : `续期前未读取到到期时间(疑似已过期)，复核剩余 ${aH.toFixed(1)}h`;
+        log(before ? '🎉 验证通过，后端已落库' : '✅ 复核到剩余时长，判定成功');
+      } else if (before && aH != null && gain > 0) {
         result.status = 'SUCCESS';
-        result.note = `+${(aH - before.totalHours).toFixed(1)}h (低于预期增量)`;
+        result.note = `+${gain.toFixed(1)}h (低于预期增量)`;
         log('✅ 时长有增加，判定成功');
       } else {
         result.status = 'FAIL';
-        result.note = '点击完成但时长未变化';
+        result.note = before ? '点击完成但时长未变化' : '续期前未读到到期时间，复核也未能确认入账';
         await safeShot(verify, `server-${idx}-fail.png`);
         log('❌ 后端未入账');
       }
